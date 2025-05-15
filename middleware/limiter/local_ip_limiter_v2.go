@@ -1,0 +1,40 @@
+package limiter
+
+import (
+	"time"
+
+	"github.com/gin-gonic/gin"
+	"golang.org/x/time/rate"
+)
+
+type LocalLimitV2 struct {
+	LimitBase
+	limiters map[string]*rate.Limiter
+}
+
+func (l *LocalLimitV2) CheckOrMark(key string, expire int, limit int) error {
+
+	limiter, ok := l.limiters[key]
+	if !ok {
+		// todo: remove limiter if necessary
+		limiter = rate.NewLimiter(rate.Every(time.Duration(expire)*time.Second), limit)
+		l.limiters[key] = limiter
+	}
+
+	if !limiter.Allow() {
+		return ErrLimited
+	}
+
+	return nil
+}
+
+func LocalLimiterV2(limitTimeIP, limitCountIP int) gin.HandlerFunc {
+
+	limiter := LocalLimitV2{
+		limiters: make(map[string]*rate.Limiter),
+	}
+	limiter.Expire = limitTimeIP
+	limiter.Limit = limitCountIP
+
+	return limiter.Process(limiter.CheckOrMark, limiter.Expire, limiter.Limit)
+}
