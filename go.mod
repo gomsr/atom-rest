@@ -1,6 +1,6 @@
 module github.com/gomsr/atom-rest
 
-go 1.23.1
+go 1.24.0
 
 require (
 	github.com/fvbock/endless v0.0.0-20170109170031-447134032cb6
@@ -19,7 +19,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.34.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/sync v0.14.0
-	golang.org/x/time v0.9.0
+	golang.org/x/time v0.13.0
 	gorm.io/gorm v1.26.1
 )
 
