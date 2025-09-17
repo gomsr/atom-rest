@@ -1,8 +1,10 @@
 package utilr
 
 import (
-	"errors"
-	"github.com/google/uuid"
+	"crypto/rsa"
+	"github.com/kongmsr/oneid-core/modelo"
+	"github.com/kongmsr/oneid-core/utilo"
+	"golang.org/x/sync/singleflight"
 	"strconv"
 	"strings"
 	"time"
@@ -10,52 +12,34 @@ import (
 	jwt "github.com/golang-jwt/jwt/v4"
 )
 
-// CustomClaims Custom claims structure
-type CustomClaims struct {
-	BaseClaims
-	BufferTime int64
-	jwt.RegisteredClaims
-}
-
-type BaseClaims struct {
-	UUID        uuid.UUID
-	Id          int
-	Phone       string
-	Email       string
-	Gender      string
-	UserType    int    `json:"user_type"` // 0:admin/1:user
-	NickName    string `json:"nick_name"`
-	Username    string `json:"username"`
-	AuthorityId int    `json:"authority_id"`
-}
-
 type JWT struct {
-	SigningKey []byte
+	SigningKey *rsa.PrivateKey
 }
 
 var (
-	TokenExpired     = errors.New("Token is expired")
-	TokenNotValidYet = errors.New("Token not active yet")
-	TokenMalformed   = errors.New("That's not even a token")
-	TokenInvalid     = errors.New("Couldn't handle this token:")
+	sg = &singleflight.Group{}
 )
 
-func NewJWT(key string) *JWT {
-	return &JWT{
-		[]byte(key),
+// NewJWT 创建一个新的jwt实例
+func NewJWT(abPrivateKeyPath string) *JWT {
+	if pk, err := utilo.ReadPriKeyOfAbPath(abPrivateKeyPath); err != nil {
+		panic("读取私钥失败: " + err.Error())
+	} else {
+		return &JWT{pk}
 	}
 }
 
-func (j *JWT) CreateClaims(baseClaims BaseClaims, bufferTime, expiresTime, issuer string) CustomClaims {
+func (j *JWT) CreateClaims(baseClaims modelo.BaseClaims, bufferTime, expiresTime, issuer string) modelo.CustomClaims {
 	bf, _ := ParseDuration(bufferTime)
 	ep, _ := ParseDuration(expiresTime)
-	claims := CustomClaims{
+	claims := modelo.CustomClaims{
 		BaseClaims: baseClaims,
-		BufferTime: int64(bf / time.Second), // 缓冲时间1天 缓冲时间内会获得新的token刷新令牌 此时一个用户会存在两个有效令牌 但是前端只留一个 另一个会丢失
+		BufferTime: int64(bf / time.Second), // 缓冲时间1天 缓冲时间内会获得新的token刷新令牌
 		RegisteredClaims: jwt.RegisteredClaims{
-			Audience:  jwt.ClaimStrings{"WPP"},                   // 受众
+			Audience:  baseClaims.Audience,                       // 受众
+			Subject:   baseClaims.Subject,                        // Subject(appid)
 			NotBefore: jwt.NewNumericDate(time.Now().Add(-1000)), // 签名生效时间
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ep)),    // 过期时间 7天  配置文件
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(ep)),    // 过期时间
 			Issuer:    issuer,                                    // 签名的发行者
 		},
 	}
@@ -63,43 +47,48 @@ func (j *JWT) CreateClaims(baseClaims BaseClaims, bufferTime, expiresTime, issue
 }
 
 // CreateToken 创建一个token
-func (j *JWT) CreateToken(claims CustomClaims) (string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+func (j *JWT) CreateToken(claims modelo.CustomClaims) (string, error) {
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+
 	return token.SignedString(j.SigningKey)
 }
 
 // CreateTokenByOldToken 旧token 换新token 使用归并回源避免并发问题
-func (j *JWT) CreateTokenByOldToken(oldToken string, claims CustomClaims) (string, error) {
-	return j.CreateToken(claims)
+func (j *JWT) CreateTokenByOldToken(oldToken string, claims modelo.CustomClaims) (string, error) {
+	v, err, _ := sg.Do("JWT:"+oldToken, func() (interface{}, error) {
+		return j.CreateToken(claims)
+	})
+	return v.(string), err
 }
 
-// ParseToken ParseToken: 解析 token
-func (j *JWT) ParseToken(tokenString string) (*CustomClaims, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &CustomClaims{}, func(token *jwt.Token) (i interface{}, e error) {
+// Deprecated: ParseToken 解析 token(rsa 需要使用公钥进行签名验证) use ParserToken
+// utilo.GetParserOfAbPath(abPubKeyPath).ParseToken(xx)
+func (j *JWT) ParseToken(tokenString string) (*modelo.CustomClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &modelo.CustomClaims{}, func(token *jwt.Token) (i interface{}, e error) {
 		return j.SigningKey, nil
 	})
 	if err != nil {
 		if ve, ok := err.(*jwt.ValidationError); ok {
 			if ve.Errors&jwt.ValidationErrorMalformed != 0 {
-				return nil, TokenMalformed
+				return nil, utilo.TokenMalformed
 			} else if ve.Errors&jwt.ValidationErrorExpired != 0 {
 				// Token is expired
-				return nil, TokenExpired
+				return nil, utilo.TokenExpired
 			} else if ve.Errors&jwt.ValidationErrorNotValidYet != 0 {
-				return nil, TokenNotValidYet
+				return nil, utilo.TokenNotValidYet
 			} else {
-				return nil, TokenInvalid
+				return nil, utilo.TokenInvalid
 			}
 		}
 	}
 	if token != nil {
-		if claims, ok := token.Claims.(*CustomClaims); ok && token.Valid {
+		if claims, ok := token.Claims.(*modelo.CustomClaims); ok && token.Valid {
 			return claims, nil
 		}
-		return nil, TokenInvalid
+		return nil, utilo.TokenInvalid
 
 	} else {
-		return nil, TokenInvalid
+		return nil, utilo.TokenInvalid
 	}
 }
 
